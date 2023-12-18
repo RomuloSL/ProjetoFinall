@@ -1,0 +1,291 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <dirent.h>
+
+#define MAX_FILENAME_LENGTH 256
+#define MAX_COMMENT_LENGTH 256
+#define MAX_LEVELS 256
+
+typedef struct {
+    int largura;
+    int altura;
+    int valorMaximo;
+    unsigned char** dados;
+} ImagemPGM;
+
+ImagemPGM* lerPGM(const char* nomeArquivo);
+ImagemPGM* suavizarImagem(const ImagemPGM* entrada, int tamanhoFiltro);
+void quantizarImagem(ImagemPGM* imagem, int niveis);
+int** calcularSCM(const ImagemPGM* imagem1, const ImagemPGM* imagem2);
+int* vetorizarSCM(const int** scm, int largura, int altura);
+void escreverCaracteristicasEmArquivo(const char* nomeArquivo, const int* caracteristicas, int numCaracteristicas, int rotulo, int niveis);
+
+// Função para ler uma imagem PGM a partir de um arquivo
+ImagemPGM* lerPGM(const char* nomeArquivo) {
+    FILE* arquivo = fopen(nomeArquivo, "rb");
+    if (!arquivo) {
+        perror("Erro ao abrir o arquivo");
+        exit(EXIT_FAILURE);
+    }
+
+    ImagemPGM* imagem = (ImagemPGM*)malloc(sizeof(ImagemPGM));
+    if (!imagem) {
+        perror("Erro de alocação de memória para a estrutura da imagem");
+        exit(EXIT_FAILURE);
+    }
+
+    // Leitura do cabeçalho PGM
+    char magica[3];
+    if (fscanf(arquivo, "%2s", magica) != 1 || strcmp(magica, "P5") != 0) {
+        fprintf(stderr, "Formato de arquivo PGM inválido\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // Leitura do comentário (se houver)
+    char comentario[MAX_COMMENT_LENGTH];
+    if (fscanf(arquivo, "#%255[^\n]%*c", comentario) == 1) {
+        // O comentário foi lido, você pode fazer algo com ele se necessário
+    }
+
+    // Leitura da largura, altura e valor máximo
+    if (fscanf(arquivo, "%d %d %d", &imagem->largura, &imagem->altura, &imagem->valorMaximo) != 3) {
+        fprintf(stderr, "Erro ao ler largura, altura ou valor máximo\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // Alocação de memória para os dados da imagem
+    imagem->dados = (unsigned char*)malloc(imagem->altura * sizeof(unsigned char));
+    if (!imagem->dados) {
+        perror("Erro de alocação de memória para os dados da imagem");
+        exit(EXIT_FAILURE);
+    }
+
+    for (int i = 0; i < imagem->altura; ++i) {
+        imagem->dados[i] = (unsigned char*)malloc(imagem->largura * sizeof(unsigned char));
+        if (!imagem->dados[i]) {
+            perror("Erro de alocação de memória para os dados da imagem");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    // Leitura dos dados da imagem
+    for (int i = 0; i < imagem->altura; ++i) {
+        if (fread(imagem->dados[i], sizeof(unsigned char), imagem->largura, arquivo) != imagem->largura) {
+            fprintf(stderr, "Erro ao ler dados da imagem\n");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    fclose(arquivo);
+    return imagem;
+}
+
+// Função para suavizar uma imagem PGM com filtro da média
+ImagemPGM* suavizarImagem(const ImagemPGM* entrada, int tamanhoFiltro) {
+    ImagemPGM* imagemSuavizada = (ImagemPGM*)malloc(sizeof(ImagemPGM));
+    if (!imagemSuavizada) {
+        perror("Erro de alocação de memória para a imagem suavizada");
+        exit(EXIT_FAILURE);
+    }
+
+    imagemSuavizada->largura = entrada->largura;
+    imagemSuavizada->altura = entrada->altura;
+    imagemSuavizada->valorMaximo = entrada->valorMaximo;
+
+    // Alocação de memória para os dados da imagem suavizada
+    imagemSuavizada->dados = (unsigned char*)malloc(imagemSuavizada->altura * sizeof(unsigned char));
+    if (!imagemSuavizada->dados) {
+        perror("Erro de alocação de memória para os dados da imagem suavizada");
+        exit(EXIT_FAILURE);
+    }
+
+    // Suavização dos dados da imagem
+    for (int i = 0; i < imagemSuavizada->altura; ++i) {
+        imagemSuavizada->dados[i] = (unsigned char*)malloc(imagemSuavizada->largura * sizeof(unsigned char));
+        if (!imagemSuavizada->dados[i]) {
+            perror("Erro de alocação de memória para os dados da imagem suavizada");
+            exit(EXIT_FAILURE);
+        }
+
+        for (int j = 0; j < imagemSuavizada->largura; ++j) {
+            // Suavização com filtro de média
+            int soma = 0;
+            int contador = 0;
+
+            for (int ni = -tamanhoFiltro / 2; ni <= tamanhoFiltro / 2; ++ni) {
+                for (int nj = -tamanhoFiltro / 2; nj <= tamanhoFiltro / 2; ++nj) {
+                    int linha = i + ni;
+                    int coluna = j + nj;
+
+                    // Verificar limites da imagem
+                    if (linha >= 0 && linha < entrada->altura && coluna >= 0 && coluna < entrada->largura) {
+                        soma += entrada->dados[linha][coluna];
+                        ++contador;
+                    }
+                }
+            }
+
+            imagemSuavizada->dados[i][j] = (unsigned char)(soma / contador);
+        }
+    }
+
+    return imagemSuavizada;
+}
+
+// Função para quantizar uma imagem PGM
+void quantizarImagem(ImagemPGM* imagem, int niveis) {
+    if (niveis <= 0 || niveis > 256) {
+        fprintf(stderr, "Número inválido de níveis de quantização\n");
+        exit(EXIT_FAILURE);
+    }
+
+    int passo = 256 / niveis;
+
+    for (int i = 0; i < imagem->altura; ++i) {
+        for (int j = 0; j < imagem->largura; ++j) {
+            int novoValor = (imagem->dados[i][j] / passo) * passo;
+            imagem->dados[i][j] = (unsigned char)novoValor;
+        }
+    }
+}
+
+// Função para calcular a matriz SCM entre duas imagens PGM
+int** calcularSCM(const ImagemPGM* imagem1, const ImagemPGM* imagem2) {
+    if (imagem1->largura != imagem2->largura || imagem1->altura != imagem2->altura) {
+        fprintf(stderr, "As dimensões das imagens não são iguais\n");
+        exit(EXIT_FAILURE);
+    }
+
+    int** scm = (int**)malloc(256 * sizeof(int*));
+    if (!scm) {
+        perror("Erro de alocação de memória para a matriz SCM");
+        exit(EXIT_FAILURE);
+    }
+
+    for (int i = 0; i < 256; ++i) {
+        scm[i] = (int*)calloc(256, sizeof(int));
+        if (!scm[i]) {
+            perror("Erro de alocação de memória para a matriz SCM");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    for (int i = 0; i < imagem1->altura; ++i) {
+        for (int j = 0; j < imagem1->largura; ++j) {
+            // Adicione o valor 1 à posição correspondente na matriz SCM
+            // para indicar a coocorrência das intensidades adjacentes
+            if (j + 1 < imagem1->largura) {
+                scm[imagem1->dados[i][j]][imagem1->dados[i][j + 1]]++;
+                scm[imagem1->dados[i][j + 1]][imagem1->dados[i][j]]++;
+            }
+
+            if (i + 1 < imagem1->altura) {
+                scm[imagem1->dados[i][j]][imagem1->dados[i + 1][j]]++;
+                scm[imagem1->dados[i + 1][j]][imagem1->dados[i][j]]++;
+            }
+
+            if (i + 1 < imagem1->altura && j + 1 < imagem1->largura) {
+                scm[imagem1->dados[i][j]][imagem1->dados[i + 1][j + 1]]++;
+                scm[imagem1->dados[i + 1][j + 1]][imagem1->dados[i][j]]++;
+            }
+        }
+    }
+
+    return scm;
+}
+
+// Função para vetorizar a matriz SCM
+int* vetorizarSCM(const int** scm, int largura, int altura) {
+    int* scmVetorizada = (int*)malloc(largura * altura * sizeof(int));
+    if (!scmVetorizada) {
+        perror("Erro de alocação de memória para o vetor da matriz SCM");
+        exit(EXIT_FAILURE);
+    }
+
+    int indice = 0;
+
+    for (int i = 0; i < altura; ++i) {
+        for (int j = 0; j < largura; ++j) {
+            scmVetorizada[indice++] = scm[i][j];
+        }
+    }
+
+    return scmVetorizada;
+}
+
+// Função para gravar os valores vetorizados em um arquivo
+void escreverCaracteristicasEmArquivo(const char* nomeArquivo, const int* caracteristicas, int numCaracteristicas, int rotulo, int niveis) {
+    FILE* arquivo = fopen(nomeArquivo, "a");  // Modo "a" para adicionar ao arquivo existente ou criar se não existir
+    if (!arquivo) {
+        perror("Erro ao abrir o arquivo para gravação");
+        exit(EXIT_FAILURE);
+    }
+
+    // Gravação dos valores vetorizados no arquivo
+    for (int i = 0; i < numCaracteristicas; ++i) {
+        fprintf(arquivo, "%d ", caracteristicas[i]);
+    }
+
+    // Inclusão do rótulo da imagem
+    fprintf(arquivo, "%d\n", rotulo);
+
+    // Fechamento do arquivo
+    fclose(arquivo);
+}
+
+int main(int argc, char* argv[]) {
+    if (argc != 4) {
+        fprintf(stderr, "Uso: %s <diretorio_imagens> <diretorio_saida> <num_niveis_quantizacao>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    char* diretorioEntrada = argv[1];
+    char* diretorioSaida = argv[2];
+    int niveis = atoi(argv[3]);
+
+    DIR* dir = opendir(diretorioEntrada);
+    if (!dir) {
+        perror("Erro ao abrir o diretório de entrada");
+        exit(EXIT_FAILURE);
+    }
+
+    struct dirent* entrada;
+    while ((entrada = readdir(dir)) != NULL) {
+        if (entrada->d_type == DT_REG) {  // Verifica se é um arquivo regular
+            char caminhoArquivo[256];
+            sprintf(caminhoArquivo, "%s/%s", diretorioEntrada, entrada->d_name);
+
+            // Leitura da imagem original
+            ImagemPGM* imagemOriginal = lerPGM(caminhoArquivo);
+
+            // Suavização da imagem
+            ImagemPGM* imagemSuavizada = suavizarImagem(imagemOriginal, 3);  // Exemplo: filtro 3x3
+
+            // Quantização da imagem suavizada
+            quantizarImagem(imagemSuavizada, niveis);
+
+            // Cálculo da matriz SCM
+            int** scm = calcularSCM(imagemOriginal, imagemSuavizada);
+
+            // Vetorização da matriz SCM
+            int* scmVetorizada = vetorizarSCM(scm, imagemOriginal->largura, imagemOriginal->altura);
+
+            // Gravação dos resultados em um arquivo
+            char nomeArquivoSaida[256];
+            sprintf(nomeArquivoSaida, "%s/caracteristicas_%d.txt", diretorioSaida, niveis);
+            escreverCaracteristicasEmArquivo(nomeArquivoSaida, scmVetorizada, imagemOriginal->largura * imagemOriginal->altura, 0, niveis);
+
+            // Liberação de memória
+            // ...
+
+            // Fechamento do arquivo
+            fclose(arquivo);
+        }
+    }
+
+    closedir(dir);
+
+    return 0;
+}
